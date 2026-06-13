@@ -304,14 +304,20 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
     return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    allowed_hosts: Optional[List[str]] = None,
+    client_host: Optional[str] = None
+) -> bool:
+    """True if the Host header targets the interface we bound to or is whitelisted.
 
     Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
+    - Hostnames explicitly listed in allowed_hosts (if provided, this enforces strict mode)
+    - Any host when bound to 0.0.0.0 / :: (explicit opt-in to non-loopback via --insecure, 
+      when no whitelist is provided)
+    - Loopback aliases when bound to loopback, OR when the client is connecting from loopback
+    - Exact bound host for explicit non-loopback binds
     """
     if not host_header:
         return False
@@ -331,26 +337,43 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
             host_only = h.strip("[]")
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    
+    # Normalize: lowercase and strip trailing DNS dots
+    host_only = host_only.lower().rstrip(".")
+    bound_lc = bound_host.lower().rstrip(".")
 
-    # 0.0.0.0 bind means operator explicitly opted into all-interfaces
-    # (requires --insecure per web_server.start_server). No Host-layer
-    # defence can protect that mode; rely on operator network controls.
-    if bound_host in {"0.0.0.0", "::"}:
+    # 1. Strict whitelist check
+    if allowed_hosts:
+        if host_only in allowed_hosts:
+            return True
+        
+        # Allow loopback hosts ONLY if the client is actually connecting via loopback
+        # or the server is bound to loopback. This prevents remote bypass via Host spoofing.
+        is_client_loopback = client_host in _LOOPBACK_HOST_VALUES if client_host else False
+        is_bound_loopback = bound_lc in _LOOPBACK_HOST_VALUES
+        
+        if (is_client_loopback or is_bound_loopback) and host_only in _LOOPBACK_HOST_VALUES:
+            return True
+            
+        return False
+
+    # 2. 0.0.0.0 / :: bind without a whitelist means operator explicitly opted 
+    # into all-interfaces (requires --insecure). No Host-layer defence can 
+    # protect that mode; rely on operator network controls (e.g., Tailscale ACLs).
+    if bound_lc in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
-    bound_lc = bound_host.lower()
+    # 3. Loopback bind: accept the loopback names
     if bound_lc in _LOOPBACK_HOST_VALUES:
         return host_only in _LOOPBACK_HOST_VALUES
 
-    # Explicit non-loopback bind: require exact host match
+    # 4. Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
 
 
 @app.middleware("http")
 async def host_header_middleware(request: Request, call_next):
-    """Reject requests whose Host header doesn't match the bound interface.
+    """Reject requests whose Host header doesn't match the bound interface or whitelist.
 
     Defends against DNS rebinding: a victim browser on a localhost
     dashboard is tricked into fetching from an attacker hostname that
@@ -360,18 +383,20 @@ async def host_header_middleware(request: Request, call_next):
 
     See GHSA-ppp5-vxwm-4cf7.
     """
-    # Store the bound host on app.state so this middleware can read it —
-    # set by start_server() at listen time.
+    # Read the bound host and allowed hosts from app.state — set by 
+    # start_server() at listen time. This avoids per-request config I/O.
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        client_host = request.client.host if request.client else None
+        allowed_hosts = getattr(app.state, "allowed_hosts", None)
+        if not _is_accepted_host(host_header, bound_host, allowed_hosts, client_host):
             return JSONResponse(
                 status_code=400,
                 content={
                     "detail": (
                         "Invalid Host header. Dashboard requests must use "
-                        "the hostname the server was bound to."
+                        "the hostname the server was bound to, or an explicitly allowed host."
                     ),
                 },
             )
@@ -9895,8 +9920,12 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not bound_host:
         return None
 
+    # Read allowed_hosts from app.state to mirror the HTTP middleware behavior
+    allowed_hosts = getattr(app.state, "allowed_hosts", None)
+    client_host = ws.client.host if ws.client else None
+
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    if not _is_accepted_host(host_header, bound_host, allowed_hosts, client_host):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -9913,7 +9942,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(parsed.netloc, bound_host, allowed_hosts, client_host):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -10139,14 +10168,29 @@ def _build_gateway_ws_url() -> Optional[str]:
     """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
+    allowed_hosts = getattr(app.state, "allowed_hosts", None)
 
     if not host or not port:
         return None
 
+    # For explicit non-loopback binds, use the first allowed host for internal
+    # connections so the Host header passes the strict whitelist check.
+    # For all-interface binds (0.0.0.0/::), prefer loopback. Loopback hosts
+    # are accepted by `_is_accepted_host` in strict mode *only* when the client
+    # is connecting via loopback, avoiding reliance on external DNS/proxy routing.
+    if host == "0.0.0.0":
+        use_host = "127.0.0.1"
+    elif host == "::":
+        use_host = "::1"
+    elif allowed_hosts and len(allowed_hosts) > 0:
+        use_host = allowed_hosts[0]
+    else:
+        use_host = host
+
     netloc = (
-        f"[{host}]:{port}"
-        if ":" in host and not host.startswith("[")
-        else f"{host}:{port}"
+        f"[{use_host}]:{port}"
+        if ":" in use_host and not use_host.startswith("[")
+        else f"{use_host}:{port}"
     )
 
     if getattr(app.state, "auth_required", False):
@@ -10175,11 +10219,27 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
+    allowed_hosts = getattr(app.state, "allowed_hosts", None)
 
     if not host or not port:
         return None
 
-    netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+    # For explicit non-loopback binds, use the first allowed host for internal
+    # connections so the Host header passes the strict whitelist check.
+    # For all-interface binds (0.0.0.0/::), prefer loopback here too. Loopback
+    # is accepted by `_is_accepted_host` in strict mode *only* when the client
+    # is connecting via loopback, avoiding external FQDN routing on the backend
+    # port when served behind a reverse proxy.
+    if host == "0.0.0.0":
+        use_host = "127.0.0.1"
+    elif host == "::":
+        use_host = "::1"
+    elif allowed_hosts and len(allowed_hosts) > 0:
+        use_host = allowed_hosts[0]
+    else:
+        use_host = host
+
+    netloc = f"[{use_host}]:{port}" if ":" in use_host and not use_host.startswith("[") else f"{use_host}:{port}"
 
     if getattr(app.state, "auth_required", False):
         # Gated mode — use the internal credential so the WS upgrade survives
@@ -11631,6 +11691,7 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     initial_profile: str = "",
+    allowed_hosts: Optional[List[str]] = None,
 ):
     """Start the web UI server.
 
@@ -11705,8 +11766,9 @@ def start_server(
             "authentication. Only use on trusted networks.", host,
         )
 
-    # Record the bound host so host_header_middleware can validate incoming
-    # Host headers against it. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
+    # Record allowed hosts and bound host for the host_header_middleware.
+    # Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
+    app.state.allowed_hosts = allowed_hosts or []
     app.state.bound_host = host
 
     # ── Start uvicorn with direct Server API ─────────────────────────

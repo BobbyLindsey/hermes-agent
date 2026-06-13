@@ -56,6 +56,16 @@ def build_dashboard_parser(
             "and preselect the profile in the UI's profile switcher."
         ),
     )
+    dashboard_parser.add_argument(
+        "--allowed-hosts",
+        dest="allowed_hosts",
+        default="",
+        help=(
+            "Comma-separated list of allowed hostnames (e.g., 'my-fqdn.ts.net,192.168.1.5'). "
+            "Optional, but recommended for strict Host validation when binding to 0.0.0.0. "
+            "If omitted, 0.0.0.0 binds remain permissive, relying on network-level controls."
+        ),
+    )
     # Internal flag set by the unified-launch re-exec (cmd_dashboard) to
     # preselect the launching profile in the SPA switcher. Hidden from
     # --help: users get this behavior automatically via `<profile> dashboard`.

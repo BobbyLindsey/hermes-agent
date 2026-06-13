@@ -10512,6 +10512,8 @@ def cmd_dashboard(args):
             reexec_argv.append("--insecure")
         if getattr(args, "skip_build", False):
             reexec_argv.append("--skip-build")
+        if getattr(args, "allowed_hosts", ""):
+            reexec_argv.extend(["--allowed-hosts", args.allowed_hosts])
         env = os.environ.copy()
         # Drop the profile HERMES_HOME so the child binds the machine root.
         env.pop("HERMES_HOME", None)
@@ -10609,7 +10611,40 @@ def cmd_dashboard(args):
             exc_info=True,
         )
 
+    from hermes_cli.config import load_config
     from hermes_cli.web_server import start_server
+
+    def _normalize_allowed_host(h: str) -> str:
+        """Normalize a host string to match _is_accepted_host header parsing."""
+        h = h.strip().lower().rstrip(".")
+        # If it's an IPv6 bracketed address (e.g., [::1] or [::1]:9119)
+        if h.startswith("[") and "]" in h:
+            # Extract just the IPv6 address part inside brackets, then strip them
+            return h.split("]")[0].strip("[")
+        # Otherwise, it's IPv4 or hostname; strip port if present
+        return h.rsplit(":", 1)[0] if ":" in h else h
+
+    # 1. Load from config.yaml
+    dashboard_cfg = load_config().get("dashboard")
+    if not isinstance(dashboard_cfg, dict):
+        dashboard_cfg = {}
+    config_hosts = dashboard_cfg.get("allowed_hosts", [])
+    if not isinstance(config_hosts, list):
+        config_hosts = []
+    config_hosts = [_normalize_allowed_host(h) for h in config_hosts if isinstance(h, str) and h.strip()]
+
+    # 2. Parse CLI override/extension
+    cli_hosts = []
+    if getattr(args, "allowed_hosts", ""):
+        cli_hosts = [_normalize_allowed_host(h) for h in args.allowed_hosts.split(",") if h.strip()]
+
+    # 3. Merge (preserve config order, append CLI, dedupe while preserving order)
+    seen = set()
+    merged_hosts = []
+    for h in config_hosts + cli_hosts:
+        if h not in seen:
+            seen.add(h)
+            merged_hosts.append(h)
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
@@ -10620,6 +10655,7 @@ def cmd_dashboard(args):
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
         initial_profile=getattr(args, "open_profile", "") or "",
+        allowed_hosts=merged_hosts,
     )
 
 
