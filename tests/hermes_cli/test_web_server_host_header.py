@@ -215,3 +215,95 @@ class TestWebSocketHostOriginGuard:
             },
         ):
             pass
+
+
+class TestAllowedHostsValidation:
+    """Tests for the explicit allowed_hosts whitelist feature."""
+
+    def test_strict_whitelist_accepts_allowed_host(self):
+        from hermes_cli.web_server import _is_accepted_host
+
+        allowed = ["my-fqdn.ts.net", "192.168.1.5"]
+        # Exact match
+        assert _is_accepted_host("my-fqdn.ts.net", "0.0.0.0", allowed)
+        assert _is_accepted_host("my-fqdn.ts.net:9119", "0.0.0.0", allowed)
+        # IP match
+        assert _is_accepted_host("192.168.1.5", "0.0.0.0", allowed)
+        assert _is_accepted_host("192.168.1.5:9119", "0.0.0.0", allowed)
+
+    def test_strict_whitelist_rejects_unallowed_host(self):
+        from hermes_cli.web_server import _is_accepted_host
+
+        allowed = ["my-fqdn.ts.net"]
+        # Different host
+        assert not _is_accepted_host("evil.example", "0.0.0.0", allowed)
+        # Raw 0.0.0.0 is rejected when whitelist is provided
+        assert not _is_accepted_host("0.0.0.0", "0.0.0.0", allowed)
+        # Another IP
+        assert not _is_accepted_host("10.0.0.1", "0.0.0.0", allowed)
+
+    def test_strict_whitelist_always_allows_loopback(self):
+        """Loopback hosts must always be allowed to preserve local tooling, even in strict mode."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        allowed = ["my-fqdn.ts.net"]
+        assert _is_accepted_host("localhost", "0.0.0.0", allowed)
+        assert _is_accepted_host("localhost:9119", "0.0.0.0", allowed)
+        assert _is_accepted_host("127.0.0.1", "0.0.0.0", allowed)
+        assert _is_accepted_host("127.0.0.1:9119", "0.0.0.0", allowed)
+        assert _is_accepted_host("[::1]", "0.0.0.0", allowed)
+
+    def test_strict_whitelist_normalization(self):
+        """Host headers should be normalized (lowercase, trailing dots stripped)."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        allowed = ["my-fqdn.ts.net"]
+        # Case insensitive
+        assert _is_accepted_host("MY-FQDN.TS.NET", "0.0.0.0", allowed)
+        # Trailing dot stripped
+        assert _is_accepted_host("my-fqdn.ts.net.", "0.0.0.0", allowed)
+        assert _is_accepted_host("MY-FQDN.TS.NET.", "0.0.0.0", allowed)
+
+    def test_websocket_strict_whitelist_rejects_unallowed_host(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "0.0.0.0", raising=False)
+        monkeypatch.setattr(ws.app.state, "allowed_hosts", ["my-fqdn.ts.net"], raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                url,
+                headers={
+                    "Host": "evil.example",
+                    "Origin": "http://evil.example",
+                },
+            ):
+                pass
+
+        assert exc.value.code == 4403
+
+    def test_websocket_strict_whitelist_accepts_allowed_host(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "0.0.0.0", raising=False)
+        monkeypatch.setattr(ws.app.state, "allowed_hosts", ["my-fqdn.ts.net"], raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "my-fqdn.ts.net",
+                "Origin": "http://my-fqdn.ts.net",
+            },
+        ):
+            pass

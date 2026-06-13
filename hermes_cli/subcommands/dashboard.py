@@ -61,9 +61,9 @@ def build_dashboard_parser(
         dest="allowed_hosts",
         default="",
         help=(
-            "Comma-separated list of allowed hostnames (e.g., for Tailscale MagicDNS "
-            "or reverse proxies). Required when binding to 0.0.0.0 to prevent DNS "
-            "rebinding attacks. Wildcards (*) are not supported."
+            "Comma-separated list of allowed hostnames (e.g., 'my-fqdn.ts.net,192.168.1.5'). "
+            "Optional, but recommended for strict Host validation when binding to 0.0.0.0. "
+            "If omitted, 0.0.0.0 binds remain permissive, relying on network-level controls."
         ),
     )
     # Internal flag set by the unified-launch re-exec (cmd_dashboard) to

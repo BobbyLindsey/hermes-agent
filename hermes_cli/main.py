@@ -10633,8 +10633,13 @@ def cmd_dashboard(args):
     if getattr(args, "allowed_hosts", ""):
         cli_hosts = [h.strip().lower().rstrip(".") for h in args.allowed_hosts.split(",") if h.strip()]
 
-    # 3. Merge (union ensures both config and CLI are respected)
-    merged_hosts = list(set(config_hosts) | set(cli_hosts))
+    # 3. Merge (preserve config order, append CLI, dedupe while preserving order)
+    seen = set()
+    merged_hosts = []
+    for h in config_hosts + cli_hosts:
+        if h not in seen:
+            seen.add(h)
+            merged_hosts.append(h)
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
