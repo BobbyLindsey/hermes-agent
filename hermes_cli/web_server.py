@@ -10176,8 +10176,8 @@ def _build_gateway_ws_url() -> Optional[str]:
     # For explicit non-loopback binds, use the first allowed host for internal
     # connections so the Host header passes the strict whitelist check.
     # For all-interface binds (0.0.0.0/::), prefer loopback. Loopback hosts
-    # are always accepted by `_is_accepted_host` (even in strict mode), avoiding
-    # reliance on external DNS or reverse-proxy routing on the backend port.
+    # are accepted by `_is_accepted_host` in strict mode *only* when the client
+    # is connecting via loopback, avoiding reliance on external DNS/proxy routing.
     if host == "0.0.0.0":
         use_host = "127.0.0.1"
     elif host == "::":
@@ -10227,8 +10227,9 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     # For explicit non-loopback binds, use the first allowed host for internal
     # connections so the Host header passes the strict whitelist check.
     # For all-interface binds (0.0.0.0/::), prefer loopback here too. Loopback
-    # is always accepted by `_is_accepted_host`, avoiding external FQDN routing
-    # on the backend port when served behind a reverse proxy.
+    # is accepted by `_is_accepted_host` in strict mode *only* when the client
+    # is connecting via loopback, avoiding external FQDN routing on the backend
+    # port when served behind a reverse proxy.
     if host == "0.0.0.0":
         use_host = "127.0.0.1"
     elif host == "::":

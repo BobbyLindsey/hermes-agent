@@ -10617,10 +10617,12 @@ def cmd_dashboard(args):
     def _normalize_allowed_host(h: str) -> str:
         """Normalize a host string to match _is_accepted_host header parsing."""
         h = h.strip().lower().rstrip(".")
+        # If it's an IPv6 bracketed address (e.g., [::1] or [::1]:9119)
         if h.startswith("[") and "]" in h:
-            h = h.split("]", 1)[0] + "]"
-        stripped = h.strip("[]")
-        return stripped.rsplit(":", 1)[0] if ":" in stripped else stripped
+            # Extract just the IPv6 address part inside brackets, then strip them
+            return h.split("]")[0].strip("[")
+        # Otherwise, it's IPv4 or hostname; strip port if present
+        return h.rsplit(":", 1)[0] if ":" in h else h
 
     # 1. Load from config.yaml
     dashboard_cfg = load_config().get("dashboard")
