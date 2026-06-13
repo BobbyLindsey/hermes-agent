@@ -10614,6 +10614,14 @@ def cmd_dashboard(args):
     from hermes_cli.config import load_config
     from hermes_cli.web_server import start_server
 
+    def _normalize_allowed_host(h: str) -> str:
+        """Normalize a host string to match _is_accepted_host header parsing."""
+        h = h.strip().lower().rstrip(".")
+        if h.startswith("[") and "]" in h:
+            h = h.split("]", 1)[0] + "]"
+        stripped = h.strip("[]")
+        return stripped.rsplit(":", 1)[0] if ":" in stripped else stripped
+
     # 1. Load from config.yaml
     dashboard_cfg = load_config().get("dashboard")
     if not isinstance(dashboard_cfg, dict):
@@ -10621,17 +10629,12 @@ def cmd_dashboard(args):
     config_hosts = dashboard_cfg.get("allowed_hosts", [])
     if not isinstance(config_hosts, list):
         config_hosts = []
-    # Normalize config hosts to match the lowercase, dot-stripped Host header check
-    config_hosts = [
-        h.strip().lower().rstrip(".")
-        for h in config_hosts
-        if isinstance(h, str) and h.strip()
-    ]
+    config_hosts = [_normalize_allowed_host(h) for h in config_hosts if isinstance(h, str) and h.strip()]
 
     # 2. Parse CLI override/extension
     cli_hosts = []
     if getattr(args, "allowed_hosts", ""):
-        cli_hosts = [h.strip().lower().rstrip(".") for h in args.allowed_hosts.split(",") if h.strip()]
+        cli_hosts = [_normalize_allowed_host(h) for h in args.allowed_hosts.split(",") if h.strip()]
 
     # 3. Merge (preserve config order, append CLI, dedupe while preserving order)
     seen = set()
