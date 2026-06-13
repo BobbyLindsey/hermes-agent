@@ -242,16 +242,29 @@ class TestAllowedHostsValidation:
         # Another IP
         assert not _is_accepted_host("10.0.0.1", "0.0.0.0", allowed)
 
-    def test_strict_whitelist_always_allows_loopback(self):
-        """Loopback hosts must always be allowed to preserve local tooling, even in strict mode."""
+    def test_strict_whitelist_allows_loopback_for_loopback_clients(self):
+        """Loopback hosts are allowed in strict mode ONLY when the client is 
+        actually connecting via loopback (or the server is bound to loopback).
+        This prevents remote attackers from bypassing the whitelist by spoofing
+        a loopback Host header, while preserving local tooling access."""
         from hermes_cli.web_server import _is_accepted_host
 
         allowed = ["my-fqdn.ts.net"]
-        assert _is_accepted_host("localhost", "0.0.0.0", allowed)
-        assert _is_accepted_host("localhost:9119", "0.0.0.0", allowed)
-        assert _is_accepted_host("127.0.0.1", "0.0.0.0", allowed)
-        assert _is_accepted_host("127.0.0.1:9119", "0.0.0.0", allowed)
-        assert _is_accepted_host("[::1]", "0.0.0.0", allowed)
+        
+        # Remote client spoofing loopback Host header must be REJECTED
+        assert not _is_accepted_host("localhost", "0.0.0.0", allowed, "192.168.1.100")
+        assert not _is_accepted_host("127.0.0.1:9119", "0.0.0.0", allowed, "10.0.0.5")
+        assert not _is_accepted_host("[::1]", "0.0.0.0", allowed, "203.0.113.50")
+        
+        # Local client connecting via loopback is ACCEPTED (preserves local tooling)
+        assert _is_accepted_host("localhost", "0.0.0.0", allowed, "127.0.0.1")
+        assert _is_accepted_host("localhost:9119", "0.0.0.0", allowed, "::1")
+        assert _is_accepted_host("127.0.0.1", "0.0.0.0", allowed, "127.0.0.1")
+        assert _is_accepted_host("127.0.0.1:9119", "0.0.0.0", allowed, "127.0.0.1")
+        assert _is_accepted_host("[::1]", "0.0.0.0", allowed, "::1")
+        
+        # Also allowed when the SERVER itself is bound to loopback
+        assert _is_accepted_host("localhost", "127.0.0.1", allowed, "192.168.1.100")
 
     def test_strict_whitelist_normalization(self):
         """Host headers should be normalized (lowercase, trailing dots stripped)."""
