@@ -338,9 +338,10 @@ def _is_accepted_host(host_header: str, bound_host: str, allowed_hosts: Optional
     bound_lc = bound_host.lower().rstrip(".")
 
     # 1. Strict whitelist check. If the operator explicitly provided a whitelist,
-    # ONLY allow those hosts. This provides strict mode even for 0.0.0.0 binds.
+    # ONLY allow those hosts or loopback aliases (which are always safe and prevent
+    # breaking local health checks or CLI tools).
     if allowed_hosts:
-        return host_only in allowed_hosts
+        return host_only in allowed_hosts or host_only in _LOOPBACK_HOST_VALUES
 
     # 2. 0.0.0.0 / :: bind without a whitelist means operator explicitly opted 
     # into all-interfaces (requires --insecure). No Host-layer defence can 
@@ -10151,14 +10152,19 @@ def _build_gateway_ws_url() -> Optional[str]:
     """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
+    allowed_hosts = getattr(app.state, "allowed_hosts", None)
 
     if not host or not port:
         return None
 
+    # If a whitelist is provided, use the first allowed host for internal
+    # connections so the Host header passes the strict whitelist check.
+    use_host = allowed_hosts[0] if (allowed_hosts and len(allowed_hosts) > 0) else host
+
     netloc = (
-        f"[{host}]:{port}"
-        if ":" in host and not host.startswith("[")
-        else f"{host}:{port}"
+        f"[{use_host}]:{port}"
+        if ":" in use_host and not use_host.startswith("[")
+        else f"{use_host}:{port}"
     )
 
     if getattr(app.state, "auth_required", False):
@@ -10187,11 +10193,16 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
+    allowed_hosts = getattr(app.state, "allowed_hosts", None)
 
     if not host or not port:
         return None
 
-    netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+    # If a whitelist is provided, use the first allowed host for internal
+    # connections so the Host header passes the strict whitelist check.
+    use_host = allowed_hosts[0] if (allowed_hosts and len(allowed_hosts) > 0) else host
+
+    netloc = f"[{use_host}]:{port}" if ":" in use_host and not use_host.startswith("[") else f"{use_host}:{port}"
 
     if getattr(app.state, "auth_required", False):
         # Gated mode — use the internal credential so the WS upgrade survives

@@ -10512,6 +10512,8 @@ def cmd_dashboard(args):
             reexec_argv.append("--insecure")
         if getattr(args, "skip_build", False):
             reexec_argv.append("--skip-build")
+        if getattr(args, "allowed_hosts", ""):
+            reexec_argv.extend(["--allowed-hosts", args.allowed_hosts])
         env = os.environ.copy()
         # Drop the profile HERMES_HOME so the child binds the machine root.
         env.pop("HERMES_HOME", None)
@@ -10613,7 +10615,10 @@ def cmd_dashboard(args):
     from hermes_cli.web_server import start_server
 
     # 1. Load from config.yaml
-    config_hosts = load_config().get("dashboard", {}).get("allowed_hosts", [])
+    dashboard_cfg = load_config().get("dashboard")
+    if not isinstance(dashboard_cfg, dict):
+        dashboard_cfg = {}
+    config_hosts = dashboard_cfg.get("allowed_hosts", [])
     if not isinstance(config_hosts, list):
         config_hosts = []
     # Normalize config hosts to match the lowercase, dot-stripped Host header check
