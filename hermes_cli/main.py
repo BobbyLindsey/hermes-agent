@@ -10609,7 +10609,27 @@ def cmd_dashboard(args):
             exc_info=True,
         )
 
+    from hermes_cli.config import load_config
     from hermes_cli.web_server import start_server
+
+    # 1. Load from config.yaml
+    config_hosts = load_config().get("dashboard", {}).get("allowed_hosts", [])
+    if not isinstance(config_hosts, list):
+        config_hosts = []
+    # Normalize config hosts to match the lowercase, dot-stripped Host header check
+    config_hosts = [
+        h.strip().lower().rstrip(".")
+        for h in config_hosts
+        if isinstance(h, str) and h.strip()
+    ]
+
+    # 2. Parse CLI override/extension
+    cli_hosts = []
+    if getattr(args, "allowed_hosts", ""):
+        cli_hosts = [h.strip().lower().rstrip(".") for h in args.allowed_hosts.split(",") if h.strip()]
+
+    # 3. Merge (union ensures both config and CLI are respected)
+    merged_hosts = list(set(config_hosts) | set(cli_hosts))
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
@@ -10620,6 +10640,7 @@ def cmd_dashboard(args):
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
         initial_profile=getattr(args, "open_profile", "") or "",
+        allowed_hosts=merged_hosts,
     )
 
 

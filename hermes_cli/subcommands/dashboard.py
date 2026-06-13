@@ -56,6 +56,16 @@ def build_dashboard_parser(
             "and preselect the profile in the UI's profile switcher."
         ),
     )
+    dashboard_parser.add_argument(
+        "--allowed-hosts",
+        dest="allowed_hosts",
+        default="",
+        help=(
+            "Comma-separated list of allowed hostnames (e.g., for Tailscale MagicDNS "
+            "or reverse proxies). Required when binding to 0.0.0.0 to prevent DNS "
+            "rebinding attacks. Wildcards (*) are not supported."
+        ),
+    )
     # Internal flag set by the unified-launch re-exec (cmd_dashboard) to
     # preselect the launching profile in the SPA switcher. Hidden from
     # --help: users get this behavior automatically via `<profile> dashboard`.

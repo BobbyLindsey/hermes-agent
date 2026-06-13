@@ -304,14 +304,15 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
     return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
+def _is_accepted_host(host_header: str, bound_host: str, allowed_hosts: Optional[List[str]] = None) -> bool:
+    """True if the Host header targets the interface we bound to or is whitelisted.
 
     Accepts:
-    - Exact bound host (with or without port suffix)
+    - Hostnames explicitly listed in allowed_hosts (if provided, this enforces strict mode)
+    - Any host when bound to 0.0.0.0 / :: (explicit opt-in to non-loopback via --insecure, 
+      when no whitelist is provided)
     - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
+    - Exact bound host for explicit non-loopback binds
     """
     if not host_header:
         return False
@@ -331,26 +332,33 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
             host_only = h.strip("[]")
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    
+    # Normalize: lowercase and strip trailing DNS dots
+    host_only = host_only.lower().rstrip(".")
+    bound_lc = bound_host.lower().rstrip(".")
 
-    # 0.0.0.0 bind means operator explicitly opted into all-interfaces
-    # (requires --insecure per web_server.start_server). No Host-layer
-    # defence can protect that mode; rely on operator network controls.
-    if bound_host in {"0.0.0.0", "::"}:
+    # 1. Strict whitelist check. If the operator explicitly provided a whitelist,
+    # ONLY allow those hosts. This provides strict mode even for 0.0.0.0 binds.
+    if allowed_hosts:
+        return host_only in allowed_hosts
+
+    # 2. 0.0.0.0 / :: bind without a whitelist means operator explicitly opted 
+    # into all-interfaces (requires --insecure). No Host-layer defence can 
+    # protect that mode; rely on operator network controls (e.g., Tailscale ACLs).
+    if bound_lc in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
-    bound_lc = bound_host.lower()
+    # 3. Loopback bind: accept the loopback names
     if bound_lc in _LOOPBACK_HOST_VALUES:
         return host_only in _LOOPBACK_HOST_VALUES
 
-    # Explicit non-loopback bind: require exact host match
+    # 4. Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
 
 
 @app.middleware("http")
 async def host_header_middleware(request: Request, call_next):
-    """Reject requests whose Host header doesn't match the bound interface.
+    """Reject requests whose Host header doesn't match the bound interface or whitelist.
 
     Defends against DNS rebinding: a victim browser on a localhost
     dashboard is tricked into fetching from an attacker hostname that
@@ -360,18 +368,19 @@ async def host_header_middleware(request: Request, call_next):
 
     See GHSA-ppp5-vxwm-4cf7.
     """
-    # Store the bound host on app.state so this middleware can read it —
-    # set by start_server() at listen time.
+    # Read the bound host and allowed hosts from app.state — set by 
+    # start_server() at listen time. This avoids per-request config I/O.
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        allowed_hosts = getattr(app.state, "allowed_hosts", None)
+        if not _is_accepted_host(host_header, bound_host, allowed_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
                     "detail": (
                         "Invalid Host header. Dashboard requests must use "
-                        "the hostname the server was bound to."
+                        "the hostname the server was bound to, or an explicitly allowed host."
                     ),
                 },
             )
@@ -9895,8 +9904,11 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not bound_host:
         return None
 
+    # Read allowed_hosts from app.state to mirror the HTTP middleware behavior
+    allowed_hosts = getattr(app.state, "allowed_hosts", None)
+
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    if not _is_accepted_host(host_header, bound_host, allowed_hosts):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -9913,7 +9925,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(parsed.netloc, bound_host, allowed_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -11631,6 +11643,7 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     initial_profile: str = "",
+    allowed_hosts: Optional[List[str]] = None,
 ):
     """Start the web UI server.
 
@@ -11705,8 +11718,9 @@ def start_server(
             "authentication. Only use on trusted networks.", host,
         )
 
-    # Record the bound host so host_header_middleware can validate incoming
-    # Host headers against it. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
+    # Record allowed hosts and bound host for the host_header_middleware.
+    # Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
+    app.state.allowed_hosts = allowed_hosts or []
     app.state.bound_host = host
 
     # ── Start uvicorn with direct Server API ─────────────────────────
