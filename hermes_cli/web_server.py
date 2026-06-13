@@ -10157,9 +10157,17 @@ def _build_gateway_ws_url() -> Optional[str]:
     if not host or not port:
         return None
 
-    # If a whitelist is provided, use the first allowed host for internal
+    # For explicit non-loopback binds, use the first allowed host for internal
     # connections so the Host header passes the strict whitelist check.
-    use_host = allowed_hosts[0] if (allowed_hosts and len(allowed_hosts) > 0) else host
+    # For all-interface binds (0.0.0.0/::), prefer loopback. Loopback hosts
+    # are always accepted by `_is_accepted_host` (even in strict mode), avoiding
+    # reliance on external DNS or reverse-proxy routing on the backend port.
+    if host in ("0.0.0.0", "::"):
+        use_host = "127.0.0.1"
+    elif allowed_hosts and len(allowed_hosts) > 0:
+        use_host = allowed_hosts[0]
+    else:
+        use_host = host
 
     netloc = (
         f"[{use_host}]:{port}"
@@ -10198,9 +10206,17 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     if not host or not port:
         return None
 
-    # If a whitelist is provided, use the first allowed host for internal
+    # For explicit non-loopback binds, use the first allowed host for internal
     # connections so the Host header passes the strict whitelist check.
-    use_host = allowed_hosts[0] if (allowed_hosts and len(allowed_hosts) > 0) else host
+    # For all-interface binds (0.0.0.0/::), prefer loopback here too. Loopback
+    # is always accepted by `_is_accepted_host`, avoiding external FQDN routing
+    # on the backend port when served behind a reverse proxy.
+    if host in ("0.0.0.0", "::"):
+        use_host = "127.0.0.1"
+    elif allowed_hosts and len(allowed_hosts) > 0:
+        use_host = allowed_hosts[0]
+    else:
+        use_host = host
 
     netloc = f"[{use_host}]:{port}" if ":" in use_host and not use_host.startswith("[") else f"{use_host}:{port}"
 
